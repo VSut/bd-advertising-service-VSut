@@ -15,6 +15,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.*;
+import java.util.stream.Collectors;
 import javax.inject.Inject;
 
 /**
@@ -61,21 +62,40 @@ public class AdvertisementSelectionLogic {
     public GeneratedAdvertisement selectAdvertisement(String customerId, String marketplaceId) {
         GeneratedAdvertisement generatedAdvertisement = new EmptyGeneratedAdvertisement();
         RequestContext context = new RequestContext(customerId, marketplaceId);
-        if (StringUtils.isEmpty(marketplaceId) || !context.isRecognizedCustomer()) {
+        TreeMap<TargetingGroup,AdvertisementContent> eligibleContents = new TreeMap<>(Comparator.comparing(TargetingGroup::getClickThroughRate));
+        if (StringUtils.isEmpty(marketplaceId)) {
             LOG.warn("MarketplaceId cannot be null or empty. Returning empty ad.");
         } else {
             final List<AdvertisementContent> contents = contentDao.get(marketplaceId);
 
             if (CollectionUtils.isNotEmpty(contents)) {
-                Optional<AdvertisementContent> rac = contents.stream().map(content -> targetingGroupDao.get(content.getContentId()).stream().sorted(Comparator.comparing(TargetingGroup::getClickThroughRate)).filter(targetingGroup -> {
-                    TargetingEvaluator targetingEvaluator = new TargetingEvaluator(context);
-                    return targetingEvaluator.evaluate(targetingGroup) == TargetingPredicateResult.TRUE && context.isRecognizedCustomer();
-                }).map(targetingGroup -> content).findFirst()).filter(Optional::isPresent).map(Optional::get).findAny();
+                for (AdvertisementContent content : contents) {
+                    List<TargetingGroup> targetingGroups = targetingGroupDao.get(content.getContentId());
+                    if (CollectionUtils.isNotEmpty(targetingGroups)) {
+                        List<TargetingGroup> eligibleTargetingGroups = targetingGroups.stream()
+                                .filter(targetingGroup -> {
+                                    TargetingEvaluator targetingEvaluator = new TargetingEvaluator(context);
+                                    return targetingEvaluator.evaluate(targetingGroup) == TargetingPredicateResult.TRUE;
+                                })
+                                .collect(Collectors.toList());
+                        if (CollectionUtils.isNotEmpty(eligibleTargetingGroups)) {
+                            eligibleContents.put(eligibleTargetingGroups.get(0), content);
+                        }
+                    }
+                }
 
 
-                generatedAdvertisement = rac
-                        .map(GeneratedAdvertisement::new)
-                        .orElseGet(EmptyGeneratedAdvertisement::new);
+
+//                Optional<AdvertisementContent> rac = contents.stream().map(content -> targetingGroupDao.get(content.getContentId()).stream().sorted(Comparator.comparing(TargetingGroup::getClickThroughRate)).filter(targetingGroup -> {
+//                    TargetingEvaluator targetingEvaluator = new TargetingEvaluator(context);
+//                    return targetingEvaluator.evaluate(targetingGroup) == TargetingPredicateResult.TRUE && context.isRecognizedCustomer();
+//                }).map(targetingGroup -> content).findFirst()).filter(Optional::isPresent).map(Optional::get).findAny();
+
+//
+//                generatedAdvertisement = rac
+//                        .map(GeneratedAdvertisement::new)
+//                        .orElseGet(EmptyGeneratedAdvertisement::new);
+                generatedAdvertisement = eligibleContents.isEmpty() ? new EmptyGeneratedAdvertisement() : new GeneratedAdvertisement(eligibleContents.lastEntry().getValue());
             }
         }
 
